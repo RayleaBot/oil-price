@@ -1,10 +1,10 @@
 {
   "id": "raylea.oil-price",
   "name": "油价查询",
-  "version": "0.3.0",
-  "manifest_version": "3",
+  "version": "0.4.0",
+  "manifest_version": "4",
   "license": "MIT",
-  "min_core_version": "0.4.0",
+  "min_core_version": "0.7.0",
   "metadata": {
     "description": "免 Key 查询各省市价区油价和城市附近大型品牌加油站",
     "author": "raylea",
@@ -13,9 +13,6 @@
   },
   "concurrency": 4,
   "events": ["message.group", "message.private"],
-  "permissions": {
-    "message.send": true
-  },
   "default_config": {
     "default_area": "北京",
     "station_limit": 5,
