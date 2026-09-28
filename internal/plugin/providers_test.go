@@ -43,33 +43,38 @@ const regionFixture = `{
 }`
 
 func TestFetchPriceBundleUsesOpenDataAndParsesZones(t *testing.T) {
-	requestCount := 0
-	client := providerClient{http: doerFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		if req.Method != http.MethodGet || req.Header.Get("User-Agent") != providerUserAgent {
-			t.Fatalf("unexpected request: %s %s headers=%v", req.Method, req.URL, req.Header)
-		}
-		switch {
-		case strings.HasSuffix(req.URL.Path, "/prices/latest.json"):
-			return jsonHTTPResponse(`{"latest":"2026/2026-08-14.json","adjustment_date":"2026-08-14","status":"complete"}`), nil
-		case strings.HasSuffix(req.URL.Path, "/prices/2026/2026-08-14.json"):
-			return jsonHTTPResponse(priceFixture), nil
-		case strings.HasSuffix(req.URL.Path, "/regions/regions.json"):
-			return jsonHTTPResponse(regionFixture), nil
-		default:
-			t.Fatalf("unexpected URL: %s", req.URL)
-			return nil, errors.New("unexpected URL")
-		}
-	})}
-	bundle, err := client.fetchPriceBundle(t.Context())
-	if err != nil {
-		t.Fatalf("fetchPriceBundle: %v", err)
-	}
-	if requestCount != 3 || len(bundle.Prices) != 2 || len(bundle.Regions) != 3 {
-		t.Fatalf("bundle = %#v, requests = %d", bundle, requestCount)
-	}
-	if bundle.Prices[0].Prices["95"] != "8.07" || bundle.Prices[0].SourceURL == "" {
-		t.Fatalf("price = %#v", bundle.Prices[0])
+	// Upstream publishes a round as partial when some provinces are not collected yet.
+	for _, status := range []string{"complete", "partial"} {
+		t.Run(status, func(t *testing.T) {
+			requestCount := 0
+			client := providerClient{http: doerFunc(func(req *http.Request) (*http.Response, error) {
+				requestCount++
+				if req.Method != http.MethodGet || req.Header.Get("User-Agent") != providerUserAgent {
+					t.Fatalf("unexpected request: %s %s headers=%v", req.Method, req.URL, req.Header)
+				}
+				switch {
+				case strings.HasSuffix(req.URL.Path, "/prices/latest.json"):
+					return jsonHTTPResponse(`{"latest":"2026/2026-08-14.json","adjustment_date":"2026-08-14","status":"` + status + `"}`), nil
+				case strings.HasSuffix(req.URL.Path, "/prices/2026/2026-08-14.json"):
+					return jsonHTTPResponse(priceFixture), nil
+				case strings.HasSuffix(req.URL.Path, "/regions/regions.json"):
+					return jsonHTTPResponse(regionFixture), nil
+				default:
+					t.Fatalf("unexpected URL: %s", req.URL)
+					return nil, errors.New("unexpected URL")
+				}
+			})}
+			bundle, err := client.fetchPriceBundle(t.Context())
+			if err != nil {
+				t.Fatalf("fetchPriceBundle: %v", err)
+			}
+			if requestCount != 3 || len(bundle.Prices) != 2 || len(bundle.Regions) != 3 {
+				t.Fatalf("bundle = %#v, requests = %d", bundle, requestCount)
+			}
+			if bundle.Prices[0].Prices["95"] != "8.07" || bundle.Prices[0].SourceURL == "" {
+				t.Fatalf("price = %#v", bundle.Prices[0])
+			}
+		})
 	}
 }
 
@@ -106,6 +111,26 @@ func TestResolveRegionalPriceUsesCityZoneAndRejectsAmbiguity(t *testing.T) {
 	bundle.Regions = append(bundle.Regions, regionMapping{Region: "广西海岛", ProvinceCode: "450000", ZoneCode: "default", Locality: "海岛"})
 	if _, _, err := resolveRegionalPrice(bundle, "海岛"); err == nil || !strings.Contains(err.Error(), "多个匹配") {
 		t.Fatalf("ambiguous error = %v", err)
+	}
+}
+
+func TestResolveRegionalPriceReportsProvinceMissingFromRound(t *testing.T) {
+	bundle, err := parsePublicPriceBundle([]byte(priceFixture), []byte(regionFixture))
+	if err != nil {
+		t.Fatalf("parsePublicPriceBundle: %v", err)
+	}
+	bundle.Regions = append(bundle.Regions,
+		regionMapping{Region: "陕西", ProvinceCode: "610000", ZoneCode: "shaanxi-1"},
+		regionMapping{Region: "陕西西安", ProvinceCode: "610000", ZoneCode: "shaanxi-1", Locality: "西安"},
+		regionMapping{Region: "广东山区", ProvinceCode: "440000", ZoneCode: "mountain", Locality: "山区"},
+	)
+	for _, requested := range []string{"陕西", "陕西省", "西安"} {
+		if _, _, err := resolveRegionalPrice(bundle, requested); err == nil || !strings.Contains(err.Error(), "陕西本轮调价（2026-08-14）的公开油价尚未收录") {
+			t.Fatalf("%s error = %v", requested, err)
+		}
+	}
+	if _, _, err := resolveRegionalPrice(bundle, "广东山区"); err == nil || !strings.Contains(err.Error(), "对应价区暂无油价") {
+		t.Fatalf("missing zone error = %v", err)
 	}
 }
 
@@ -207,11 +232,23 @@ func TestProviderRequestErrorDoesNotExposeURL(t *testing.T) {
 	}
 }
 
-func TestFetchPriceBundleRejectsUntrustedLatestPath(t *testing.T) {
-	client := providerClient{http: doerFunc(func(*http.Request) (*http.Response, error) {
-		return jsonHTTPResponse(`{"latest":"../../secret.json","adjustment_date":"2026-08-14","status":"complete"}`), nil
-	})}
-	if _, err := client.fetchPriceBundle(t.Context()); err == nil || !strings.Contains(err.Error(), "尚未生成完整数据") {
-		t.Fatalf("error = %v", err)
+func TestFetchPriceBundleRejectsInvalidIndex(t *testing.T) {
+	tests := []struct {
+		name  string
+		index string
+		want  string
+	}{
+		{name: "untrusted path", index: `{"latest":"../../secret.json","adjustment_date":"2026-08-14","status":"complete"}`, want: "数据文件无效"},
+		{name: "unknown status", index: `{"latest":"2026/2026-08-14.json","adjustment_date":"2026-08-14","status":"draft"}`, want: "状态不受支持"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := providerClient{http: doerFunc(func(*http.Request) (*http.Response, error) {
+				return jsonHTTPResponse(test.index), nil
+			})}
+			if _, err := client.fetchPriceBundle(t.Context()); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }

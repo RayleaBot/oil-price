@@ -97,8 +97,12 @@ func (client *providerClient) fetchPriceBundle(ctx context.Context) (priceBundle
 	if err := json.Unmarshal(latestDocument, &latest); err != nil {
 		return priceBundle{}, fmt.Errorf("解析公开油价索引: %w", err)
 	}
-	if latest.Status != "complete" || !priceDocumentPattern.MatchString(latest.Latest) {
-		return priceBundle{}, fmt.Errorf("公开油价索引尚未生成完整数据")
+	if !priceDocumentPattern.MatchString(latest.Latest) {
+		return priceBundle{}, fmt.Errorf("公开油价索引指向的数据文件无效")
+	}
+	// Upstream marks a round "partial" while some provinces are still uncollected; the collected ones are final.
+	if latest.Status != "complete" && latest.Status != "partial" {
+		return priceBundle{}, fmt.Errorf("公开油价索引状态不受支持")
 	}
 	priceDocument, err := client.fetchPublicJSON(ctx, "prices/"+latest.Latest)
 	if err != nil {
@@ -238,12 +242,29 @@ func resolveRegionalPrice(bundle priceBundle, requested string) (areaResolution,
 			return areaResolution{}, regionalPrice{}, fmt.Errorf("地区“%s”存在多个匹配，请补充省市名称", requested)
 		}
 	}
+	provinceCollected := false
 	for _, price := range bundle.Prices {
-		if price.ProvinceCode == selected.ProvinceCode && price.ZoneCode == selected.ZoneCode {
+		if price.ProvinceCode != selected.ProvinceCode {
+			continue
+		}
+		provinceCollected = true
+		if price.ZoneCode == selected.ZoneCode {
 			return areaResolution{Requested: requested, Province: price.Region, City: selected.Locality}, price, nil
 		}
 	}
+	if !provinceCollected {
+		return areaResolution{}, regionalPrice{}, fmt.Errorf("%s本轮调价（%s）的公开油价尚未收录，请稍后再试", provinceLabel(bundle.Regions, selected.ProvinceCode, requested), bundle.AdjustmentDate)
+	}
 	return areaResolution{}, regionalPrice{}, fmt.Errorf("地区“%s”对应价区暂无油价", requested)
+}
+
+func provinceLabel(regions []regionMapping, provinceCode, requested string) string {
+	for _, item := range regions {
+		if item.ProvinceCode == provinceCode && item.Locality == "" {
+			return strings.TrimSpace(item.Region)
+		}
+	}
+	return fmt.Sprintf("“%s”所在省份", requested)
 }
 
 func (client *providerClient) geocodeArea(ctx context.Context, requested string) (stationCenter, error) {
