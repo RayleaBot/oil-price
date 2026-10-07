@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/RayleaBot/plugin-oil-price/internal/plugin"
+	"github.com/RayleaBot/oil-price/internal/plugin"
 )
 
 func main() {

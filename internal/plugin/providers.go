@@ -24,7 +24,7 @@ const (
 	nominatimURL      = "https://nominatim.openstreetmap.org/search"
 	overpassKumiURL   = "https://overpass.kumi.systems/api/interpreter"
 	overpassMainURL   = "https://overpass-api.de/api/interpreter"
-	providerUserAgent = "RayleaBot-OilPrice/0.2 (+https://github.com/RayleaBot/plugin-oil-price)"
+	providerUserAgent = "RayleaBot-OilPrice/0.2 (+https://github.com/RayleaBot/oil-price)"
 	maxBodyBytes      = 2 << 20
 	priceRequestLimit = 25 * time.Second
 	geocodeLimit      = 10 * time.Second

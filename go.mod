@@ -1,4 +1,4 @@
-module github.com/RayleaBot/plugin-oil-price
+module github.com/RayleaBot/oil-price
 
 go 1.27.1
 
